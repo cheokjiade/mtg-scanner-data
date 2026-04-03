@@ -213,20 +213,54 @@ def main():
     print(f"  Updated: {len(updated_cards)}")
     print(f"  Removed: {len(removed_ids)}")
 
-    if not new_cards and not updated_cards and not removed_ids:
+    # 4b. Fetch latest set data from Scryfall (always include — it's small)
+    print("\nFetching set data...")
+    sets_data = []
+    try:
+        sets_resp = requests.get("https://api.scryfall.com/sets",
+                                  headers={"User-Agent": "MTGScanner/1.0"})
+        sets_resp.raise_for_status()
+        sets_json = sets_resp.json()
+        sets_data = sets_json.get("data", [])
+        # Slim down set objects to just what the app needs
+        sets_data = [
+            {
+                "code": s.get("code"),
+                "name": s.get("name"),
+                "released_at": s.get("released_at"),
+                "set_type": s.get("set_type"),
+                "icon_svg_uri": s.get("icon_svg_uri"),
+                "card_count": s.get("card_count"),
+                "parent_set_code": s.get("parent_set_code"),
+            }
+            for s in sets_data
+        ]
+        print(f"  {len(sets_data)} sets fetched")
+    except Exception as e:
+        print(f"  Warning: Failed to fetch sets: {e}")
+
+    # 4c. Fetch price summary for popular cards (top movers)
+    # Prices are embedded in card objects already, so no separate fetch needed.
+    # The delta cards include prices in their JSON.
+
+    has_card_changes = bool(new_cards or updated_cards or removed_ids)
+    has_set_changes = bool(sets_data)
+
+    if not has_card_changes and not has_set_changes:
         print("No changes detected.")
         set_github_env("HAS_CHANGES", "false")
         return
 
     # 5. Write delta JSON (gzipped)
     delta = {
-        "version": "1.0",
+        "version": "2.0",
         "scryfall_updated_at": scryfall_updated_at,
         "previous_updated_at": prev_updated_at,
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "new": new_cards,
         "updated": updated_cards,
         "removed": removed_ids,
+        "sets": sets_data,  # Always include latest set metadata
     }
 
     delta_path = OUTPUT_DIR / "delta.json.gz"
@@ -235,6 +269,13 @@ def main():
 
     delta_size = delta_path.stat().st_size
     print(f"  Delta file: {delta_size / 1024:.0f} KB")
+
+    # 5b. Also write sets as a standalone file (app can fetch just this)
+    if sets_data:
+        sets_path = OUTPUT_DIR / "sets.json"
+        with open(sets_path, "w") as f:
+            json.dump({"sets": sets_data, "updated_at": scryfall_updated_at}, f)
+        print(f"  Sets file: {sets_path.stat().st_size / 1024:.0f} KB")
 
     # 6. Write manifest (card hashes for next delta comparison)
     manifest = {
