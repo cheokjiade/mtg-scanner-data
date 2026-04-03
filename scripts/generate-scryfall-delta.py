@@ -93,8 +93,12 @@ def download_previous_hashes(release: dict) -> dict:
 
 
 def card_hash(card: dict) -> str:
-    """Generate a hash of the card's key fields to detect changes."""
-    # Hash the fields that matter for the app
+    """Generate a hash of the card's key fields to detect changes.
+
+    IMPORTANT: Prices are EXCLUDED from the hash because they change daily
+    for most cards, which would make every delta contain ~100k cards (~50MB+).
+    Prices are published separately as a lightweight prices.json.gz file.
+    """
     key_fields = {
         "name": card.get("name"),
         "mana_cost": card.get("mana_cost"),
@@ -109,9 +113,12 @@ def card_hash(card: dict) -> str:
         "loyalty": card.get("loyalty"),
         "image_uris": card.get("image_uris"),
         "legalities": card.get("legalities"),
-        "prices": card.get("prices"),
+        # "prices" — EXCLUDED: changes daily, would bloat every delta
         "reserved": card.get("reserved"),
         "released_at": card.get("released_at"),
+        "cmc": card.get("cmc"),
+        "color_identity": card.get("color_identity"),
+        "finishes": card.get("finishes"),
     }
     raw = json.dumps(key_fields, sort_keys=True).encode()
     return hashlib.md5(raw).hexdigest()
@@ -183,10 +190,14 @@ def main():
             set_github_env("HAS_CHANGES", "false")
             return
 
-    # 3. Download and process current data
+    # 3. Download and process current data — single pass collects:
+    #    - Card hashes (for delta comparison)
+    #    - New/updated cards
+    #    - Compact price map (published separately)
     current_hashes = {}
     new_cards = []
     updated_cards = []
+    price_map = {}  # card_id → {usd: "0.34", usd_foil: "1.20", ...}
 
     for card in stream_download_cards(info["download_uri"]):
         card_id = card.get("id")
@@ -197,11 +208,19 @@ def main():
         current_hashes[card_id] = h
 
         if card_id not in prev_hashes:
-            # New card
             new_cards.append(card)
         elif prev_hashes[card_id] != h:
-            # Changed card
             updated_cards.append(card)
+
+        # Extract prices (compact: only non-null values)
+        prices = card.get("prices", {})
+        compact_prices = {}
+        for key in ("usd", "usd_foil", "eur", "eur_foil"):
+            val = prices.get(key)
+            if val is not None:
+                compact_prices[key] = val
+        if compact_prices:
+            price_map[card_id] = compact_prices
 
     # 4. Find removed cards
     current_ids = set(current_hashes.keys())
@@ -212,8 +231,9 @@ def main():
     print(f"  New: {len(new_cards)}")
     print(f"  Updated: {len(updated_cards)}")
     print(f"  Removed: {len(removed_ids)}")
+    print(f"  Cards with prices: {len(price_map)}")
 
-    # 4b. Fetch latest set data from Scryfall (always include — it's small)
+    # 4c. Fetch latest set data from Scryfall (always include — it's small)
     print("\nFetching set data...")
     sets_data = []
     try:
@@ -245,8 +265,10 @@ def main():
 
     has_card_changes = bool(new_cards or updated_cards or removed_ids)
     has_set_changes = bool(sets_data)
+    has_prices = bool(price_map)
 
-    if not has_card_changes and not has_set_changes:
+    # Always publish if we have prices (they change daily)
+    if not has_card_changes and not has_set_changes and not has_prices:
         print("No changes detected.")
         set_github_env("HAS_CHANGES", "false")
         return
@@ -270,12 +292,39 @@ def main():
     delta_size = delta_path.stat().st_size
     print(f"  Delta file: {delta_size / 1024:.0f} KB")
 
-    # 5b. Also write sets as a standalone file (app can fetch just this)
+    # 5b. Write sets as standalone file
     if sets_data:
         sets_path = OUTPUT_DIR / "sets.json"
         with open(sets_path, "w") as f:
             json.dump({"sets": sets_data, "updated_at": scryfall_updated_at}, f)
         print(f"  Sets file: {sets_path.stat().st_size / 1024:.0f} KB")
+
+    # 5c. Write compact price map (gzipped)
+    # Published EVERY run (even if no card changes) because prices change daily.
+    # Format: { "card_uuid": {"usd": "0.34", "usd_foil": "1.20"}, ... }
+    # ~3-5MB gzipped for ~100k cards with prices.
+    prices_data = {
+        "updated_at": scryfall_updated_at,
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "card_count": len(price_map),
+        "prices": price_map,
+    }
+
+    # Current prices (published with every delta release)
+    prices_path = OUTPUT_DIR / "prices.json.gz"
+    with gzip.open(prices_path, "wt", encoding="utf-8") as f:
+        json.dump(prices_data, f, separators=(",", ":"))
+    prices_size = prices_path.stat().st_size
+    print(f"  Prices file: {prices_size / 1024:.0f} KB ({len(price_map)} cards)")
+
+    # Daily price archive (one per day, kept forever for historical trends)
+    # The app can download past price snapshots to build price history charts
+    # for cards the user doesn't own (without needing per-card API calls).
+    archive_date = datetime.utcnow().strftime("%Y-%m-%d")
+    archive_path = OUTPUT_DIR / f"prices-{archive_date}.json.gz"
+    with gzip.open(archive_path, "wt", encoding="utf-8") as f:
+        json.dump(prices_data, f, separators=(",", ":"))
+    print(f"  Price archive: prices-{archive_date}.json.gz")
 
     # 6. Write manifest (card hashes for next delta comparison)
     manifest = {

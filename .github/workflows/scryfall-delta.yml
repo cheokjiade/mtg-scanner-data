@@ -41,6 +41,8 @@ jobs:
           body: Scryfall delta update with ${{ env.NEW_COUNT }} new, ${{ env.UPDATED_COUNT }} updated, ${{ env.REMOVED_COUNT }} removed cards.
           files: |
             delta-output/delta.json.gz
+            delta-output/prices.json.gz
+            delta-output/prices-*.json.gz
             delta-output/manifest.json
             delta-output/sets.json
         env:
