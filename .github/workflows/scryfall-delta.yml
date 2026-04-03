@@ -1,0 +1,46 @@
+name: Scryfall Delta Update
+
+on:
+  schedule:
+    # Run every 2 hours
+    - cron: '0 */2 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+# NOTE: No large files are stored in git.
+# The 500MB Scryfall file is downloaded ephemerally during the Action.
+# Only the delta (~1-5MB gzipped) and manifest (~15MB) are published
+# as GitHub Release assets (supports up to 2GB per file).
+# The manifest from the previous release is used to compute the next delta.
+
+permissions:
+  contents: write
+
+jobs:
+  generate-delta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Generate delta
+        run: python scripts/generate-scryfall-delta.py
+
+      - name: Upload delta as release
+        if: env.HAS_CHANGES == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: scryfall-delta-${{ env.DELTA_DATE }}
+          name: Scryfall Delta ${{ env.DELTA_DATE }}
+          body: Scryfall delta update with ${{ env.NEW_COUNT }} new, ${{ env.UPDATED_COUNT }} updated, ${{ env.REMOVED_COUNT }} removed cards.
+          files: |
+            delta-output/delta.json.gz
+            delta-output/manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
