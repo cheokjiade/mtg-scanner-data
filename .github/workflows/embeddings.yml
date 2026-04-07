@@ -96,13 +96,16 @@ jobs:
               -d "{\"tag_name\":\"$TAG\",\"name\":\"Embeddings (Latest)\",\"body\":\"Auto-updated embedding database\"}" \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           else
-            ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
-              | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='embeddings.tar.gz'),''))" 2>/dev/null)
-            if [ -n "$ASSET_ID" ]; then
-              curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
-            fi
+            # Delete existing assets
+            for ASSET_NAME in embeddings.tar.gz embeddings.bin; do
+              ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
+                | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='$ASSET_NAME'),''))" 2>/dev/null)
+              if [ -n "$ASSET_ID" ]; then
+                curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
+              fi
+            done
           fi
 
           echo "Uploading embeddings.tar.gz..."
@@ -111,5 +114,12 @@ jobs:
             -H "Content-Type: application/gzip" \
             "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=embeddings.tar.gz" \
             --data-binary @embeddings.tar.gz
+
+          echo "Uploading embeddings.bin..."
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=embeddings.bin" \
+            --data-binary @embeddings.bin
 
           echo "Done!"
