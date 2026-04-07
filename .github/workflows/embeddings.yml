@@ -1,0 +1,115 @@
+name: Update Embeddings
+
+on:
+  schedule:
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-embeddings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install onnxruntime Pillow requests numpy
+
+      - name: Download ONNX model from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          MODEL_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/embeddings-latest" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); assets=d.get('assets',[]); print(next((a['browser_download_url'] for a in assets if a['name']=='card_embedder.onnx'),''))" 2>/dev/null)
+
+          if [ -n "$MODEL_URL" ]; then
+            echo "Downloading ONNX model..."
+            curl -L -o card_embedder.onnx "$MODEL_URL"
+            echo "Downloaded $(wc -c < card_embedder.onnx) bytes"
+          else
+            echo "No ONNX model found in release"
+            if [ ! -f card_embedder.onnx ]; then
+              echo "Error: No ONNX model available"
+              exit 1
+            fi
+          fi
+
+          DATA_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/embeddings-latest" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); assets=d.get('assets',[]); print(next((a['browser_download_url'] for a in assets if a['name']=='card_embedder.onnx.data'),''))" 2>/dev/null)
+
+          if [ -n "$DATA_URL" ]; then
+            curl -L -o card_embedder.onnx.data "$DATA_URL"
+          fi
+
+      - name: Download previous embeddings file
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          RELEASE_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/embeddings-latest" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); assets=d.get('assets',[]); print(next((a['browser_download_url'] for a in assets if a['name']=='embeddings.tar.gz'),''))" 2>/dev/null)
+
+          if [ -n "$RELEASE_URL" ]; then
+            echo "Downloading existing embeddings file..."
+            curl -L -o embeddings.tar.gz "$RELEASE_URL"
+            tar xzf embeddings.tar.gz
+            echo "Downloaded $(wc -c < embeddings.bin) bytes"
+          else
+            echo "No existing embeddings file found, starting fresh"
+            touch embeddings.bin
+          fi
+
+      - name: Compute new embeddings
+        run: python3 scripts/update_embeddings.py
+
+      - name: Compress and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          tar czf embeddings.tar.gz embeddings.bin
+          echo "Compressed: $(wc -c < embeddings.tar.gz) bytes"
+
+          TAG="embeddings-latest"
+
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/$TAG" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Creating release..."
+            RELEASE_ID=$(curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO_NAME/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Embeddings (Latest)\",\"body\":\"Auto-updated embedding database\"}" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          else
+            ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
+              | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='embeddings.tar.gz'),''))" 2>/dev/null)
+            if [ -n "$ASSET_ID" ]; then
+              curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
+            fi
+          fi
+
+          echo "Uploading embeddings.tar.gz..."
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/gzip" \
+            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=embeddings.tar.gz" \
+            --data-binary @embeddings.tar.gz
+
+          echo "Done!"
