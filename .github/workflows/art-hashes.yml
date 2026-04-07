@@ -1,0 +1,79 @@
+name: Update Art Hashes
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-hashes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install Pillow requests
+
+      - name: Download previous hash file
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          RELEASE_URL=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/art-hashes-latest" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); assets=d.get('assets',[]); print(next((a['browser_download_url'] for a in assets if a['name']=='art_hashes.bin'),''))" 2>/dev/null)
+
+          if [ -n "$RELEASE_URL" ]; then
+            echo "Downloading existing hash file..."
+            curl -L -o art_hashes.bin "$RELEASE_URL"
+            echo "Downloaded $(wc -c < art_hashes.bin) bytes"
+          else
+            echo "No existing hash file found, starting fresh"
+            touch art_hashes.bin
+          fi
+
+      - name: Compute new hashes
+        run: python3 scripts/update_art_hashes.py
+
+      - name: Upload hash file
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          TAG="art-hashes-latest"
+
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/$TAG" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Creating release..."
+            RELEASE_ID=$(curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO_NAME/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Art Hashes (Latest)\",\"body\":\"Auto-updated art hash database\"}" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          else
+            ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
+              | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='art_hashes.bin'),''))" 2>/dev/null)
+            if [ -n "$ASSET_ID" ]; then
+              curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
+            fi
+          fi
+
+          echo "Uploading art_hashes.bin..."
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=art_hashes.bin" \
+            --data-binary @art_hashes.bin
+
+          echo "Done! $(wc -c < art_hashes.bin) bytes uploaded"
