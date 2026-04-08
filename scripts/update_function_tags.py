@@ -31,20 +31,31 @@ OUTPUT_FILE = "function_tags.bin"
 MAGIC = b"MTGF"
 VERSION = 1
 
-# Tag definitions: (bit_index, tag_name, scryfall_query)
+# Tag definitions: (bit_index, tag_name, scryfall_queries)
+# Multiple queries are unioned for tags that combine several Scryfall tagger categories.
 TAGS = [
-    (0,  "draw",             "function:draw"),
-    (1,  "removal",          "function:removal"),
-    (2,  "ramp",             "function:ramp"),
-    (3,  "board_wipe",       "function:board-wipe"),
-    (4,  "tutor",            "function:tutor"),
-    (5,  "recursion",        "function:recursion"),
-    (6,  "counterspell",     "function:counterspell"),
-    (7,  "sacrifice_outlet", "function:sacrifice-outlet"),
-    (8,  "lifegain",         "function:lifegain"),
-    (9,  "flicker",          "function:flicker"),
-    (10, "graveyard_hate",   "function:graveyard-hate"),
-    # 11-31 reserved for future tags
+    (0,  "draw",             ["function:draw"]),
+    (1,  "removal",          ["function:removal"]),
+    (2,  "ramp",             ["function:ramp"]),
+    (3,  "board_wipe",       ["function:board-wipe"]),
+    (4,  "tutor",            ["function:tutor"]),
+    (5,  "recursion",        ["function:recursion"]),
+    (6,  "counterspell",     ["function:counterspell"]),
+    (7,  "sacrifice_outlet", ["function:sacrifice-outlet"]),
+    (8,  "lifegain",         ["function:lifegain"]),
+    (9,  "flicker",          ["function:flicker"]),
+    (10, "graveyard_hate",   ["function:graveyard-hate"]),
+    (11, "protection",       [
+        "function:protects-creature",
+        "function:protects-artifact",
+        "function:protects-enchantment",
+        "function:protects-planeswalker",
+        "function:protects-land",
+        "function:protects-permanent",
+        "function:gives-player-protection",
+        "function:fog",
+    ]),
+    # 12-31 reserved for future tags
 ]
 
 
@@ -56,11 +67,10 @@ def fetch_all_ids_for_tag(query):
     while url:
         resp = requests.get(url, headers=HEADERS)
         if resp.status_code == 404:
-            # No results for this tag
             return ids
-        if resp.status_code == 503:
-            print(f"    Rate limited, waiting 10s...")
-            time.sleep(10)
+        if resp.status_code in (429, 503):
+            print(f"    Rate limited ({resp.status_code}), waiting 30s...")
+            time.sleep(30)
             continue
         if resp.status_code != 200:
             print(f"    Error {resp.status_code} for {query}")
@@ -77,8 +87,8 @@ def fetch_all_ids_for_tag(query):
         else:
             url = None
 
-        # Scryfall rate limit: 50-100ms between requests
-        time.sleep(0.1)
+        # Scryfall rate limit: 50-100ms between requests (use 150ms for safety)
+        time.sleep(0.15)
 
     return ids
 
@@ -114,10 +124,15 @@ def main():
     # Collect card IDs per tag
     card_bitmasks = {}  # card_id_str -> bitmask
 
-    for bit_index, tag_name, query in TAGS:
-        print(f"\nFetching {tag_name} ({query})...")
-        ids = fetch_all_ids_for_tag(query)
-        print(f"  Found {len(ids)} cards")
+    for bit_index, tag_name, queries in TAGS:
+        print(f"\nFetching {tag_name}...")
+        ids = set()
+        for query in queries:
+            query_ids = fetch_all_ids_for_tag(query)
+            print(f"  {query}: {len(query_ids)} cards")
+            ids |= query_ids
+        if len(queries) > 1:
+            print(f"  Combined: {len(ids)} unique cards")
 
         for card_id in ids:
             if card_id not in card_bitmasks:
