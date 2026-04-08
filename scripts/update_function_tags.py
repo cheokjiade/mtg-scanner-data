@@ -55,7 +55,15 @@ TAGS = [
         "function:gives-player-protection",
         "function:fog",
     ]),
-    # 12-31 reserved for future tags
+    (12, "bounce",           ["function:bounce"]),
+    (13, "stax",             ["function:tax", "function:pillowfort"]),
+    (14, "counters",         [
+        "function:gives-pp-counters",
+        "function:counters-matter",
+        "function:gives-mm-counters",
+        "function:counter-doubler",
+    ]),
+    # 15-31 reserved for future tags
 ]
 
 
