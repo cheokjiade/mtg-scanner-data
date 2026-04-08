@@ -1,0 +1,64 @@
+name: Update Function Tags
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-tags:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch function tags from Scryfall
+        run: python3 scripts/update_function_tags.py
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.repository }}
+        run: |
+          TAG="function-tags-latest"
+
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$REPO_NAME/releases/tags/$TAG" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Creating release..."
+            RELEASE_ID=$(curl -s -X POST -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO_NAME/releases" \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"Function Tags (Latest)\",\"body\":\"Auto-updated Scryfall function tags\"}" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          else
+            ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
+              | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='function_tags.bin'),''))" 2>/dev/null)
+            if [ -n "$ASSET_ID" ]; then
+              curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
+            fi
+          fi
+
+          echo "Uploading function_tags.bin..."
+          curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=function_tags.bin" \
+            --data-binary @function_tags.bin
+
+          echo "Done!"
