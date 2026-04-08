@@ -79,8 +79,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_NAME: ${{ github.repository }}
         run: |
+          python3 -c "import zlib; open('embeddings.bin.zlib','wb').write(zlib.compress(open('embeddings.bin','rb').read()))"
           tar czf embeddings.tar.gz embeddings.bin
-          echo "Compressed: $(wc -c < embeddings.tar.gz) bytes"
+          echo "Raw: $(wc -c < embeddings.bin) bytes"
+          echo "Zlib: $(wc -c < embeddings.bin.zlib) bytes"
 
           TAG="embeddings-latest"
 
@@ -96,8 +98,7 @@ jobs:
               -d "{\"tag_name\":\"$TAG\",\"name\":\"Embeddings (Latest)\",\"body\":\"Auto-updated embedding database\"}" \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           else
-            # Delete existing assets
-            for ASSET_NAME in embeddings.tar.gz embeddings.bin; do
+            for ASSET_NAME in embeddings.tar.gz embeddings.bin embeddings.bin.zlib; do
               ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
                 | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='$ASSET_NAME'),''))" 2>/dev/null)
@@ -108,18 +109,15 @@ jobs:
             done
           fi
 
-          echo "Uploading embeddings.tar.gz..."
-          curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/gzip" \
-            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=embeddings.tar.gz" \
-            --data-binary @embeddings.tar.gz
-
-          echo "Uploading embeddings.bin..."
-          curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=embeddings.bin" \
-            --data-binary @embeddings.bin
+          for UPLOAD in "embeddings.tar.gz:application/gzip" "embeddings.bin:application/octet-stream" "embeddings.bin.zlib:application/octet-stream"; do
+            FNAME="${UPLOAD%%:*}"
+            CTYPE="${UPLOAD##*:}"
+            echo "Uploading $FNAME..."
+            curl -s -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: $CTYPE" \
+              "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=$FNAME" \
+              --data-binary @"$FNAME"
+          done
 
           echo "Done!"

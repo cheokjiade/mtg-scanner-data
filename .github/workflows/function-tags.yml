@@ -31,6 +31,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_NAME: ${{ github.repository }}
         run: |
+          python3 -c "import zlib; open('function_tags.bin.zlib','wb').write(zlib.compress(open('function_tags.bin','rb').read()))"
+          echo "Raw: $(wc -c < function_tags.bin) bytes"
+          echo "Zlib: $(wc -c < function_tags.bin.zlib) bytes"
+
           TAG="function-tags-latest"
 
           RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
@@ -45,20 +49,26 @@ jobs:
               -d "{\"tag_name\":\"$TAG\",\"name\":\"Function Tags (Latest)\",\"body\":\"Auto-updated Scryfall function tags\"}" \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           else
-            ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
-              | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='function_tags.bin'),''))" 2>/dev/null)
-            if [ -n "$ASSET_ID" ]; then
-              curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
-                "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
-            fi
+            for ASSET_NAME in function_tags.bin function_tags.bin.zlib; do
+              ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
+                | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='$ASSET_NAME'),''))" 2>/dev/null)
+              if [ -n "$ASSET_ID" ]; then
+                curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+                  "https://api.github.com/repos/$REPO_NAME/releases/assets/$ASSET_ID"
+              fi
+            done
           fi
 
-          echo "Uploading function_tags.bin..."
-          curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=function_tags.bin" \
-            --data-binary @function_tags.bin
+          for UPLOAD in "function_tags.bin:application/octet-stream" "function_tags.bin.zlib:application/octet-stream"; do
+            FNAME="${UPLOAD%%:*}"
+            CTYPE="${UPLOAD##*:}"
+            echo "Uploading $FNAME..."
+            curl -s -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: $CTYPE" \
+              "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=$FNAME" \
+              --data-binary @"$FNAME"
+          done
 
           echo "Done!"

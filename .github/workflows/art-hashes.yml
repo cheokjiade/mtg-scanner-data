@@ -50,9 +50,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO_NAME: ${{ github.repository }}
         run: |
-          # Compress
+          # Compress with zlib (iOS-compatible) and tar.gz (workflow delta download)
+          python3 -c "import zlib; open('art_hashes.bin.zlib','wb').write(zlib.compress(open('art_hashes.bin','rb').read()))"
           tar czf art_hashes.tar.gz art_hashes.bin
-          echo "Compressed: $(wc -c < art_hashes.tar.gz) bytes"
+          echo "Raw: $(wc -c < art_hashes.bin) bytes"
+          echo "Zlib: $(wc -c < art_hashes.bin.zlib) bytes"
+          echo "Tar.gz: $(wc -c < art_hashes.tar.gz) bytes"
 
           TAG="art-hashes-latest"
 
@@ -68,8 +71,7 @@ jobs:
               -d "{\"tag_name\":\"$TAG\",\"name\":\"Art Hashes (Latest)\",\"body\":\"Auto-updated art hash database\"}" \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
           else
-            # Delete existing assets
-            for ASSET_NAME in art_hashes.tar.gz art_hashes.bin; do
+            for ASSET_NAME in art_hashes.tar.gz art_hashes.bin art_hashes.bin.zlib; do
               ASSET_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
                 "https://api.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets" \
                 | python3 -c "import sys,json; assets=json.load(sys.stdin); print(next((str(a['id']) for a in assets if a['name']=='$ASSET_NAME'),''))" 2>/dev/null)
@@ -80,18 +82,15 @@ jobs:
             done
           fi
 
-          echo "Uploading art_hashes.tar.gz..."
-          curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/gzip" \
-            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=art_hashes.tar.gz" \
-            --data-binary @art_hashes.tar.gz
-
-          echo "Uploading art_hashes.bin..."
-          curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Content-Type: application/octet-stream" \
-            "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=art_hashes.bin" \
-            --data-binary @art_hashes.bin
+          for UPLOAD in "art_hashes.tar.gz:application/gzip" "art_hashes.bin:application/octet-stream" "art_hashes.bin.zlib:application/octet-stream"; do
+            FNAME="${UPLOAD%%:*}"
+            CTYPE="${UPLOAD##*:}"
+            echo "Uploading $FNAME..."
+            curl -s -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Content-Type: $CTYPE" \
+              "https://uploads.github.com/repos/$REPO_NAME/releases/$RELEASE_ID/assets?name=$FNAME" \
+              --data-binary @"$FNAME"
+          done
 
           echo "Done!"
