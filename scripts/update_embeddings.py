@@ -101,8 +101,7 @@ def get_all_card_ids():
     resp = requests.get(download_url, headers=HEADERS, stream=True)
 
     cards = []
-    import ijson
-    # Use streaming JSON parser to handle large file
+    # Use streaming JSON parser if available, otherwise load into memory
     try:
         import ijson
         parser = ijson.items(resp.raw, "item")
