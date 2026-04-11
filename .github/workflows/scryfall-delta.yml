@@ -2,8 +2,8 @@ name: Scryfall Delta Update
 
 on:
   schedule:
-    # Run every 2 hours
-    - cron: '0 */2 * * *'
+    # Run twice daily (00:00 and 12:00 UTC)
+    - cron: '0 0,12 * * *'
   workflow_dispatch: # Allow manual trigger
 
 # NOTE: No large files are stored in git.
