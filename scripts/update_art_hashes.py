@@ -16,6 +16,8 @@ from PIL import Image
 from io import BytesIO
 import hashlib
 
+import scryfall_bulk
+
 
 def compute_phash(image):
     """64-bit perceptual hash (same algorithm as Swift ArtHasher)."""
@@ -97,17 +99,20 @@ def fetch_all_cards():
     print("Fetching Scryfall bulk data info...")
     resp = requests.get("https://api.scryfall.com/bulk-data",
                        headers={"User-Agent": "MTGScannerData/1.0"})
+    resp.raise_for_status()
     bulk = resp.json()
 
     url = None
     for item in bulk["data"]:
         if item["type"] == "default_cards":
-            url = item["download_uri"]
+            url, _ = scryfall_bulk.resolve_download_info(item)
             break
 
+    if not url:
+        raise RuntimeError("No default_cards entry in Scryfall bulk-data response")
+
     print(f"Downloading bulk data...")
-    cards = requests.get(url, headers={"User-Agent": "MTGScannerData/1.0"}).json()
-    print(f"  {len(cards)} total cards")
+    cards = list(scryfall_bulk.stream_cards(url, user_agent="MTGScannerData/1.0"))
     return cards
 
 

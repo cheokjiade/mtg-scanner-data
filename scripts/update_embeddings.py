@@ -17,6 +17,8 @@ import numpy as np
 from PIL import Image
 from io import BytesIO
 
+import scryfall_bulk
+
 SCRYFALL_BULK_URL = "https://api.scryfall.com/bulk-data"
 EMBEDDINGS_FILE = "embeddings.bin"
 ONNX_MODEL_URL_ENV = "ONNX_MODEL_URL"  # Set via env var or download from release
@@ -96,49 +98,25 @@ def get_all_card_ids():
         print("Error: could not find default_cards bulk data")
         return []
 
-    download_url = default_cards["download_uri"]
-    print(f"Downloading bulk data ({default_cards.get('size', '?')} bytes)...")
-    resp = requests.get(download_url, headers=HEADERS, stream=True)
+    download_url, size = scryfall_bulk.resolve_download_info(default_cards)
+    print(f"Downloading bulk data ({size or '?'} bytes)...")
 
     cards = []
-    # Use streaming JSON parser if available, otherwise load into memory
-    try:
-        import ijson
-        parser = ijson.items(resp.raw, "item")
-        for card in parser:
-            art_crop = None
-            if "image_uris" in card and "art_crop" in card["image_uris"]:
-                art_crop = card["image_uris"]["art_crop"]
-            elif "card_faces" in card and card["card_faces"]:
-                face = card["card_faces"][0]
-                if "image_uris" in face and "art_crop" in face["image_uris"]:
-                    art_crop = face["image_uris"]["art_crop"]
+    for card in scryfall_bulk.stream_cards(download_url, user_agent=HEADERS["User-Agent"]):
+        art_crop = None
+        if "image_uris" in card and "art_crop" in card["image_uris"]:
+            art_crop = card["image_uris"]["art_crop"]
+        elif "card_faces" in card and card["card_faces"]:
+            face = card["card_faces"][0]
+            if "image_uris" in face and "art_crop" in face["image_uris"]:
+                art_crop = face["image_uris"]["art_crop"]
 
-            if art_crop and card.get("id"):
-                cards.append({
-                    "id": card["id"],
-                    "name": card.get("name", ""),
-                    "art_crop": art_crop,
-                })
-    except ImportError:
-        # Fallback: load entire JSON into memory
-        print("ijson not available, loading full JSON into memory...")
-        data = resp.json()
-        for card in data:
-            art_crop = None
-            if "image_uris" in card and "art_crop" in card["image_uris"]:
-                art_crop = card["image_uris"]["art_crop"]
-            elif "card_faces" in card and card["card_faces"]:
-                face = card["card_faces"][0]
-                if "image_uris" in face and "art_crop" in face["image_uris"]:
-                    art_crop = face["image_uris"]["art_crop"]
-
-            if art_crop and card.get("id"):
-                cards.append({
-                    "id": card["id"],
-                    "name": card.get("name", ""),
-                    "art_crop": art_crop,
-                })
+        if art_crop and card.get("id"):
+            cards.append({
+                "id": card["id"],
+                "name": card.get("name", ""),
+                "art_crop": art_crop,
+            })
 
     print(f"Found {len(cards)} cards with art crops")
     return cards
