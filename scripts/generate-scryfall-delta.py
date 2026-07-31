@@ -23,6 +23,7 @@ import json
 import gzip
 import os
 import sys
+import zlib
 import hashlib
 from datetime import datetime
 from pathlib import Path
@@ -52,9 +53,14 @@ def fetch_scryfall_info() -> dict:
     resp = requests.get(SCRYFALL_BULK_API, headers={"User-Agent": "MTGScanner/1.0"})
     resp.raise_for_status()
     info = resp.json()
+    # Scryfall replaced the plain-JSON `download_uri` with a gzipped-JSONL
+    # `jsonl_download_uri` (and `size` with `compressed_size`) in mid-2026.
+    # Normalize so the rest of the script has one field to look at.
+    info["download_uri"] = info.get("download_uri") or info["jsonl_download_uri"]
+    size = info.get("size") or info.get("compressed_size", 0)
     print(f"  Updated at: {info['updated_at']}")
     print(f"  Download URI: {info['download_uri'][:80]}...")
-    print(f"  Size: {info.get('size', 0) / 1024 / 1024:.0f} MB")
+    print(f"  Size: {size / 1024 / 1024:.0f} MB")
     return info
 
 
@@ -125,10 +131,13 @@ def card_hash(card: dict) -> str:
 
 
 def stream_download_cards(url: str):
-    """Stream-download and parse the Scryfall bulk JSON line by line."""
+    """Stream-download and parse the Scryfall bulk data (JSON array or gzipped JSONL) line by line."""
     print(f"Downloading bulk data...")
     resp = requests.get(url, stream=True, headers={"User-Agent": "MTGScanner/1.0"})
     resp.raise_for_status()
+
+    # New-style bulk files are gzipped JSONL; decompress the stream on the fly.
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS) if url.endswith(".gz") else None
 
     total = int(resp.headers.get("content-length", 0))
     downloaded = 0
@@ -136,8 +145,10 @@ def stream_download_cards(url: str):
     card_count = 0
 
     for chunk in resp.iter_content(chunk_size=256 * 1024):
-        buffer += chunk
         downloaded += len(chunk)
+        if decompressor:
+            chunk = decompressor.decompress(chunk)
+        buffer += chunk
 
         # Process complete lines
         while b"\n" in buffer:
@@ -162,6 +173,21 @@ def stream_download_cards(url: str):
                     yield card
                 except json.JSONDecodeError:
                     continue
+
+    # Flush any remaining decompressed data and parse a possible final
+    # line that had no trailing newline.
+    if decompressor:
+        buffer += decompressor.flush()
+    line = buffer.strip()
+    if line.startswith(b"{"):
+        if line.endswith(b","):
+            line = line[:-1]
+        try:
+            card = json.loads(line)
+            card_count += 1
+            yield card
+        except json.JSONDecodeError:
+            pass
 
     print(f"  Total: {card_count} cards")
 
